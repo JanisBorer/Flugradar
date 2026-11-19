@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="de" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SkyWatch Live – Interaktives Flugradar</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="antialiased select-none">
+
+    <div id="map"></div>
+
+    <!-- HUD OBEN LINKS -->
+    <div class="fixed top-4 left-4 z-[1000] flex flex-col gap-3 max-w-[calc(100vw-2rem)] sm:max-w-sm pointer-events-none">
+        <div class="bg-slate-900/85 backdrop-blur-md border border-sky-400/25 rounded-2xl p-4 shadow-2xl pointer-events-auto">
+            <div class="flex items-center justify-between gap-3 mb-2">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-9 h-9 rounded-xl bg-sky-500/15 border border-sky-400/30 flex items-center justify-center text-sky-400">
+                        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="9" stroke-opacity="0.4"/>
+                            <circle cx="12" cy="12" r="5" stroke-opacity="0.7"/>
+                            <path d="M12 12l6.5 -6.5" stroke-linecap="round"/>
+                            <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <h1 class="text-base font-bold tracking-tight text-white leading-tight">SkyWatch Radar</h1>
+                        <div class="flex items-center gap-1.5 mt-0.5">
+                            <span id="status-dot" class="w-2 h-2 rounded-full bg-emerald-400 pulse-dot"></span>
+                            <span id="status-text" class="text-xs font-medium text-emerald-400">Live-Daten (OpenSky)</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="text-right bg-slate-950/70 border border-slate-800 rounded-xl px-3 py-1.5">
+                    <div id="aircraft-count" class="text-lg font-mono font-bold text-sky-400 leading-none">0</div>
+                    <div class="text-[10px] uppercase tracking-wider text-slate-400 mt-1">Flugzeuge</div>
+                </div>
+            </div>
+
+            <div class="relative mt-3">
+                <input type="text" id="search-input" placeholder="Rufzeichen (z.B. SWR) oder Land..." class="w-full bg-slate-950/75 border border-slate-700/80 focus:border-sky-400 rounded-xl pl-3 pr-8 py-2 text-xs text-white placeholder-slate-400 outline-none">
+                <button id="clear-search" class="hidden absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-white">✕</button>
+            </div>
+        </div>
+
+        <!-- Zoom-Warnung -->
+        <div id="zoom-warning" class="hidden bg-amber-950/90 backdrop-blur-md border border-amber-500/40 rounded-2xl p-3.5 shadow-xl pointer-events-auto">
+            <h3 class="text-xs font-semibold text-amber-300">Kartenausschnitt zu gross</h3>
+            <p class="text-[11px] text-amber-200/80 mt-0.5">Bitte zoome näher heran, um Live-Daten abzurufen.</p>
+            <button id="btn-reset-zoom" class="mt-2 text-[11px] font-medium bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-400/30 rounded-lg px-2.5 py-1">Auf Schweiz zentrieren</button>
+        </div>
+
+        <!-- Fehler / API-Limit Banner -->
+        <div id="error-banner" class="hidden bg-rose-950/90 backdrop-blur-md border border-rose-500/40 rounded-2xl p-3.5 shadow-xl pointer-events-auto">
+            <h3 id="error-title" class="text-xs font-semibold text-rose-300">API-Limit erreicht</h3>
+            <p id="error-message" class="text-[11px] text-rose-200/80 mt-0.5">OpenSky limitiert anonyme Abfragen vorübergehend.</p>
+            <div class="flex flex-wrap gap-2 mt-2.5">
+                <button id="btn-enable-sim" class="text-[11px] font-semibold bg-sky-500 hover:bg-sky-400 text-slate-950 rounded-lg px-3 py-1.5">Simulationsmodus starten</button>
+                <button id="btn-retry-live" class="text-[11px] font-medium bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-400/30 rounded-lg px-2.5 py-1.5">Erneut versuchen</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- HUD OBEN RECHTS -->
+    <div class="fixed top-4 right-4 z-[1000] flex flex-wrap items-center justify-end gap-2 pointer-events-auto">
+        <button id="btn-toggle-mode" class="bg-slate-900/85 hover:bg-slate-800/90 backdrop-blur-md border border-sky-400/25 rounded-xl px-3 py-2.5 text-xs font-medium text-slate-200 shadow-lg">
+            <span id="mode-btn-text">Modus: Live-API</span>
+        </button>
+        <button id="btn-auto-refresh" class="bg-slate-900/85 hover:bg-slate-800/90 backdrop-blur-md border border-emerald-400/40 rounded-xl px-3 py-2.5 text-xs font-medium text-emerald-300 shadow-lg flex items-center gap-2">
+            <span id="auto-refresh-indicator" class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span>Auto (10s)</span>
+        </button>
+        <button id="btn-manual-refresh" class="bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold rounded-xl px-3 py-2.5 shadow-lg text-xs">
+            Aktualisieren
+        </button>
+    </div>
+
+    <!-- DETAIL-SIDEBAR -->
+    <aside id="flight-detail-panel" class="fixed bottom-4 left-4 right-4 sm:left-auto sm:top-20 sm:bottom-auto sm:right-4 sm:w-96 z-[1000] bg-slate-900/92 backdrop-blur-xl border border-sky-400/30 rounded-2xl shadow-2xl transform translate-y-[120%] sm:translate-y-0 sm:translate-x-[120%] opacity-0 pointer-events-none transition-all duration-300 overflow-hidden">
+        <div class="bg-slate-900 px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+            <div>
+                <div class="flex items-center gap-2">
+                    <h2 id="detail-callsign" class="text-lg font-mono font-bold text-white">SWR123</h2>
+                    <span id="detail-status-badge" class="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">In der Luft</span>
+                </div>
+                <p id="detail-country" class="text-xs text-slate-400 mt-0.5">Schweiz</p>
+            </div>
+            <button id="btn-close-detail" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white">✕</button>
+        </div>
+
+        <div class="p-5 space-y-4">
+            <div class="grid grid-cols-2 gap-3">
+                <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
+                    <div class="text-[11px] text-slate-400">Flughöhe (Baro)</div>
+                    <div id="detail-alt-m" class="text-base font-mono font-bold text-white mt-1">0 m</div>
+                    <div id="detail-alt-ft" class="text-xs font-mono text-sky-400 mt-0.5">0 ft</div>
+                </div>
+                <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
+                    <div class="text-[11px] text-slate-400">Geschwindigkeit</div>
+                    <div id="detail-speed-kmh" class="text-base font-mono font-bold text-white mt-1">0 km/h</div>
+                    <div id="detail-speed-kts" class="text-xs font-mono text-sky-400 mt-0.5">0 kts</div>
+                </div>
+            </div>
+
+            <div class="bg-slate-950/50 border border-slate-800 rounded-xl divide-y divide-slate-800 text-xs">
+                <div class="flex justify-between px-3.5 py-2.5">
+                    <span class="text-slate-400">Kurs</span>
+                    <span id="detail-track" class="font-mono font-medium text-white">0°</span>
+                </div>
+                <div class="flex justify-between px-3.5 py-2.5">
+                    <span class="text-slate-400">Vertikale Rate</span>
+                    <span id="detail-vrate" class="font-mono font-medium text-emerald-400">0.0 m/s</span>
+                </div>
+                <div class="flex justify-between px-3.5 py-2.5">
+                    <span class="text-slate-400">ICAO24</span>
+                    <span id="detail-icao" class="font-mono uppercase text-slate-200">—</span>
+                </div>
+                <div class="flex justify-between px-3.5 py-2.5">
+                    <span class="text-slate-400">Koordinaten</span>
+                    <span id="detail-coords" class="font-mono text-slate-300">—</span>
+                </div>
+            </div>
+
+            <button id="btn-center-aircraft" class="w-full py-2.5 px-4 bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/30 rounded-xl text-xs font-semibold text-sky-300">
+                Flugzeug auf Karte verfolgen
+            </button>
+        </div>
+    </aside>
+
+    <!-- FUSSZEILE -->
+    <div class="fixed bottom-4 left-4 z-[900] hidden md:flex items-center gap-4 bg-slate-900/80 backdrop-blur-md border border-slate-800 rounded-xl px-3.5 py-2 text-[11px] text-slate-400 pointer-events-auto">
+        <div class="flex items-center gap-2">
+            <span class="font-medium text-slate-300">Höhe:</span>
+            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block"></span> &lt;1.000m</span>
+            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block"></span> 1.000–7.000m</span>
+            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-sky-400 inline-block"></span> &gt;7.000m</span>
+        </div>
+        <div class="h-3 w-px bg-slate-700"></div>
+        <div>Update: <span id="last-update-time" class="font-mono text-slate-200">--:--:--</span></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <script src="script.js"></script>
+</body>
+</html>
