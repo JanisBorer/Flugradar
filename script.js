@@ -33,11 +33,10 @@ function initMap() {
 
     L.control.zoom({ position: 'bottomright' }).addTo(state.map);
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; OSM &copy; CARTO | Daten: OpenSky Network',
-        subdomains: 'abcd',
-        maxZoom: 19
-    }).addTo(state.map);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors | Daten: OpenSky Network',
+    maxZoom: 19
+}).addTo(state.map);
 
     let moveTimeout = null;
     state.map.on('moveend', () => {
@@ -113,47 +112,52 @@ function parseOpenSkyState(raw) {
 async function fetchFlightData() {
     if (state.isSimulationMode || state.isFetching) return;
 
-    const bounds = state.map.getBounds();
-    const zoomWarningEl = document.getElementById('zoom-warning');
-
-    if (!isBoundsWithinLimit(bounds)) {
-        zoomWarningEl.classList.remove('hidden');
-        updateStatusIndicator('warning', 'Bitte näher heranzoomen');
-        return;
-    } else {
-        zoomWarningEl.classList.add('hidden');
-    }
-
     state.isFetching = true;
+    const center = state.map.getCenter();
+    const url = `https://opendata.adsb.fi/api/v2/lat/${center.lat.toFixed(4)}/lon/${center.lng.toFixed(4)}/dist/250`;
 
-    const lamin = bounds.getSouth().toFixed(4);
-    const lomin = bounds.getWest().toFixed(4);
-    const lamax = bounds.getNorth().toFixed(4);
-    const lomax = bounds.getEast().toFixed(4);
-    const url = `${CONFIG.openSkyEndpoint}?lamin=${lamin}&lomin=${lomin}&lamax=${lamax}&lomax=${lomax}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
 
     try {
-        const response = await fetch(url);
-        if (response.status === 429) throw new Error('RATE_LIMIT');
+        const response = await fetch(url, { signal: controller.signal });
         if (!response.ok) throw new Error(`HTTP_${response.status}`);
 
         const data = await response.json();
         document.getElementById('error-banner').classList.add('hidden');
-        updateStatusIndicator('live', 'Live-Daten (OpenSky)');
+        updateStatusIndicator('live', 'Live-Daten (adsb.fi)');
 
         state.aircraftData.clear();
-        if (data && Array.isArray(data.states)) {
-            for (const rawState of data.states) {
-                const parsed = parseOpenSkyState(rawState);
-                if (parsed) state.aircraftData.set(parsed.icao24, parsed);
+        if (data && Array.isArray(data.ac)) {
+            for (const ac of data.ac) {
+                if (typeof ac.lat !== 'number' || typeof ac.lon !== 'number' || !ac.hex) continue;
+
+                const altMeters = typeof ac.alt_baro === 'number'
+                    ? ac.alt_baro * 0.3048
+                    : null;
+
+                state.aircraftData.set(ac.hex, {
+                    icao24: ac.hex,
+                    callsign: (ac.flight || '').trim() || `N/A (${ac.hex.toUpperCase()})`,
+                    origin_country: ac.cou || 'Unbekannt',
+                    longitude: ac.lon,
+                    latitude: ac.lat,
+                    baro_altitude: altMeters,
+                    on_ground: ac.alt_baro === 'ground',
+                    velocity: typeof ac.gs === 'number' ? ac.gs * 0.514444 : null,
+                    true_track: typeof ac.track === 'number' ? ac.track : 0,
+                    vertical_rate: typeof ac.baro_rate === 'number' ? ac.baro_rate * 0.00508 : null
+                });
             }
         }
 
         updateLastUpdateTime();
         renderAircraftOnMap();
     } catch (error) {
+        console.error('Live-API Fehler:', error);
         handleApiError(error.message);
     } finally {
+        clearTimeout(timeoutId);
         state.isFetching = false;
     }
 }
@@ -301,13 +305,27 @@ function enableSimulationMode() {
     document.getElementById('mode-btn-text').textContent = 'Modus: Simulation';
     updateStatusIndicator('sim', 'Demo-Simulation aktiv');
 
-    state.simAircraft = [
-        { icao24: '4b1801', callsign: 'SWR142', origin_country: 'Switzerland', latitude: 47.46, longitude: 8.55, baro_altitude: 9800, velocity: 235, true_track: 65, vertical_rate: 2.1, on_ground: false },
-        { icao24: '4b19a2', callsign: 'SWR2810', origin_country: 'Switzerland', latitude: 46.24, longitude: 6.11, baro_altitude: 10970, velocity: 248, true_track: 215, vertical_rate: 0.0, on_ground: false },
-        { icao24: '3c6441', callsign: 'DLH402', origin_country: 'Germany', latitude: 48.10, longitude: 9.20, baro_altitude: 11580, velocity: 255, true_track: 260, vertical_rate: -0.2, on_ground: false },
-        { icao24: '440192', callsign: 'AUA511', origin_country: 'Austria', latitude: 47.25, longitude: 10.40, baro_altitude: 10360, velocity: 240, true_track: 275, vertical_rate: 0.0, on_ground: false },
-        { icao24: '40768a', callsign: 'EZY44K', origin_country: 'United Kingdom', latitude: 47.59, longitude: 7.53, baro_altitude: 1200, velocity: 110, true_track: 155, vertical_rate: 6.5, on_ground: false }
-    ];
+    const airlines = ['SWR', 'DLH', 'AFR', 'BAW', 'AUA', 'EZY', 'KLM', 'UAE'];
+    const countries = ['Switzerland', 'Germany', 'France', 'United Kingdom', 'Austria', 'Netherlands'];
+    const center = state.map.getCenter();
+
+    state.simAircraft = Array.from({ length: 50 }, (_, i) => {
+        const prefix = airlines[i % airlines.length];
+        const num = 100 + ((i * 37) % 899);
+        const alt = i % 10 === 0 ? 450 : (2000 + ((i * 750) % 10000));
+        return {
+            icao24: (0x4b0000 + i).toString(16),
+            callsign: `${prefix}${num}`,
+            origin_country: countries[i % countries.length],
+            latitude: center.lat + (Math.random() - 0.5) * 3.5,
+            longitude: center.lng + (Math.random() - 0.5) * 5.0,
+            baro_altitude: alt,
+            velocity: 140 + (i % 6) * 25,
+            true_track: Math.floor(Math.random() * 360),
+            vertical_rate: Number(((Math.random() - 0.5) * 8).toFixed(1)),
+            on_ground: false
+        };
+    });
 
     stepSimulation();
     clearInterval(state.simTimer);
